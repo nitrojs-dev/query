@@ -33,17 +33,12 @@ export interface FC<P = {}> {
 export interface QueryFn<A extends unknown[], R> {
   (...args: A): R | Promise<R>;
 }
-
-export interface UseAsyncOptions {
-  whileLoading?(loading: boolean): void;
-  onError?(e: Error): void;
-}
-
-export interface QueryOptions<A extends unknown[], R> extends UseAsyncOptions {
+export interface QueryOptions<A extends unknown[], R> {
   fn: QueryFn<A, R>;
   callerArgs?: A;
   /** Optional: set to `false` to disable caching for this specific query. Defaults to true. */
   useCache?: boolean;
+  customQueryKey?: string;
 }
 
 export interface QueryResult<R> {
@@ -79,7 +74,7 @@ export const generateCacheKey = <A extends unknown[]>(
 export function useQuery<A extends unknown[], R>(
   opts: QueryOptions<A, R>
 ): QueryResult<R> {
-  const { fn, callerArgs, useCache: useCacheOption = true } = opts;
+  const { fn, callerArgs, useCache: useCacheOption = true, customQueryKey } = opts;
   const [data, setData] = useState<R>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error>();
@@ -87,7 +82,7 @@ export function useQuery<A extends unknown[], R>(
   const isMounted = useRef(true);
   // Determine the cache key
   const currentCallerArgs = callerArgs ?? ([] as unknown[] as A);
-  const cacheKey = generateCacheKey(fn, currentCallerArgs);
+  const cacheKey = customQueryKey ?? generateCacheKey(fn, currentCallerArgs);
 
   useEffect(() => {
     isMounted.current = true; // Set to true when effect runs (component mounts/updates)
@@ -102,7 +97,6 @@ export function useQuery<A extends unknown[], R>(
       // If not cached or caching is disabled, proceed with fetching
       try {
         setLoading(true);
-        opts.whileLoading?.(true);
         const res = fn(...currentCallerArgs);
         const returnData = res instanceof Promise ? await res : res;
         // Only update state if component is still mounted
@@ -120,12 +114,10 @@ export function useQuery<A extends unknown[], R>(
               ? e
               : new Error("An unexpected error occured :(");
           setError(err);
-          opts.onError?.(err);
         }
       } finally {
         if (isMounted.current) {
           setLoading(false);
-          opts.whileLoading?.(false); // Call whileLoading with false in finally block
         }
       }
     };
@@ -137,9 +129,7 @@ export function useQuery<A extends unknown[], R>(
     fn,
     currentCallerArgs,
     cacheKey,
-    useCacheOption,
-    opts.whileLoading,
-    opts.onError
+    useCacheOption
   ]); // Added all dependencies
 
   return { data, error, loading };
@@ -173,7 +163,7 @@ export interface MutationResult<A extends unknown[], R> extends QueryResult<R> {
 export function useMutation<A extends unknown[], R>(
   opts: MutationOptions<A, R>
 ): MutationResult<A, R> {
-  const { fn, useCache: useCacheOption = true, invalidateKeys } = opts;
+  const { fn, useCache: useCacheOption = true, invalidateKeys, customQueryKey } = opts;
   const [data, setData] = useState<R>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error>();
@@ -189,12 +179,11 @@ export function useMutation<A extends unknown[], R>(
   const mutate = useCallback(
     async (...args: A) => {
       const currentCallerArgs = args ?? ([] as unknown[] as A);
-      const cacheKey = generateCacheKey(opts.fn, currentCallerArgs);
+      const cacheKey = customQueryKey ?? generateCacheKey(opts.fn, currentCallerArgs);
 
       try {
         if (isMounted.current) {
           setLoading(true);
-          opts.whileLoading?.(true);
         }
 
         const res = opts.fn(...currentCallerArgs);
@@ -208,7 +197,6 @@ export function useMutation<A extends unknown[], R>(
             invalidateKeys.forEach(key => {
               if (cache.has(key)) {
                 cache.delete(key);
-                console.log(`Cache invalidated for key: ${key}`);
               }
             });
           }
@@ -224,17 +212,15 @@ export function useMutation<A extends unknown[], R>(
               ? e
               : new Error("An unexpected error occured :(");
           setError(err);
-          opts.onError?.(err);
         }
       } finally {
         if (isMounted.current) {
           setLoading(false);
-          opts.whileLoading?.(false);
         }
       }
     },
 
-    [fn, useCacheOption, opts.whileLoading, opts.onError, invalidateKeys]
+    [fn, useCacheOption, invalidateKeys]
   ); // Added all dependencies including invalidateKeys
 
   const mutateFn: MutateFn<A> = useAsync(mutate);
@@ -341,8 +327,8 @@ export function useStore<T>(initialValue: StateInput<T>): Store<T> {
 }
 
 export interface Atom<T> {
-  readonly value: T;
-  reset(setter: React.Dispatch<React.SetStateAction<T>>): void;
+  readonly $$typeof?: symbol;
+  readonly consume: () => T;
 }
 
 /**
@@ -352,24 +338,20 @@ export interface Atom<T> {
  * The `reset` function resets the store's value to its initial value.
  * @template T
  * @param {StateInput<T>} initialValue - The initial value of the store.
- * @returns {Store<T>} An object with the store's value and a reset function.
+ * @returns {Atom<T>} An object with the store's value and a reset function.
  */
 export function atom<T>(initialValue: StateInput<T>): Atom<T> {
+  const id = Symbol("nitro.query.atom" + crypto.randomUUID());
   let value =
     initialValue instanceof Function
       ? initialValue()
       : initialValue;
 
   return {
-    get value() {
+    $$typeof: id,
+    consume() {
       return value;
-    },
-    reset: (setter: React.Dispatch<React.SetStateAction<T>>) =>
-      setter(
-        initialValue instanceof Function
-          ? initialValue()
-          : initialValue
-      )
+    }
   };
 }
 
@@ -382,19 +364,8 @@ export function atom<T>(initialValue: StateInput<T>): Atom<T> {
  * @returns {Store<T>} An object with the store's value and a reset function.
  */
 export function useAtom<T>(store: Atom<T>): Store<T> {
-  const st = useStore(store.value);
-  return {
-    value: st.value,
-    reset() {
-      store.reset((v) => {
-        if (v instanceof Function) {
-          st.value = v(st.value);
-        } else {
-          st.value = v;
-        }
-      });
-    }
-  };
+  const st = useStore(store.consume);
+  return st;
 }
 
 export interface AsyncComponent<P = {}> extends AsyncFn<[P], JSX.Element> { }
@@ -463,8 +434,8 @@ export interface QueryProps<A extends unknown[], R> extends QueryOptions<A, R> {
  * @returns {Renderable} The result of calling the child component with the query result as a prop, or null if no child component is provided.
  */
 export function Query<A extends unknown[], R>(props: QueryProps<A, R>): Renderable {
-  const query = useQuery(props);
-  const CH = props.children;
+  const { children: CH, ...queryOptions } = props;
+  const query = useQuery(queryOptions);
 
   // @ts-ignore
   return CH ? <CH {...query} /> : null;
@@ -484,11 +455,88 @@ export interface MutationProps<A extends unknown[], R> extends MutationOptions<A
  * @returns {Renderable} The result of calling the child component with the mutation result as a prop, or null if no child component is provided.
  */
 export function Mutation<A extends unknown[], R>(props: MutationProps<A, R>): Renderable {
-  const mutation = useMutation(props);
-  const CH = props.children;
+  const { children: CH, ...mutationOptions } = props;
+  const mutation = useMutation(mutationOptions);
 
   // @ts-ignore
   return CH ? <CH {...mutation} /> : null;
+}
+
+export interface SuspenseQuery<A, R> extends Omit<QueryResult<R>, "loading"> { }
+/**
+ * A React hook that wraps a query function with suspense support.
+ * It returns an object with the query result data and an error object if the query failed.
+ * @param {QueryOptions<A, R>} opts - An object with the query function and its arguments, and an optional boolean to indicate if caching should be enabled.
+ * @returns {SuspenseQuery<A, R>} An object with the query result data and an error object if the query failed.
+ */
+export function useSuspenseQuery<A extends unknown[], R>(
+  opts: QueryOptions<A, R>
+): SuspenseQuery<A, R> {
+  const { fn, callerArgs, useCache: useCacheOption = true, customQueryKey } = opts;
+  const currentCallerArgs = callerArgs ?? ([] as unknown[] as A);
+  const cacheKey = customQueryKey ?? generateCacheKey(fn, currentCallerArgs);
+  const [data, setData] = useState<R | undefined>(undefined);
+  const [error, setError] = useState<Error | undefined>(undefined);
+  const isMounted = useRef(true);
+
+  useEffect(() => {
+    isMounted.current = true; // Set to true when effect runs (component mounts/updates)
+
+    (async () => {
+      try {
+        const res = fn(...currentCallerArgs);
+        const returnData = res instanceof Promise ? await res : res;
+        // Only update state if component is still mounted
+        if (isMounted.current) {
+          setData(returnData);
+          // Store result in cache only if useCacheOption is true
+          if (useCacheOption) {
+            cache.set(cacheKey, returnData);
+          }
+        }
+      } catch (e) {
+        if (isMounted.current) {
+          const err =
+            e instanceof Error
+              ? e
+              : new Error("An unexpected error occured :(");
+          setError(err);
+        }
+      }
+    })();
+
+    return () => {
+      isMounted.current = false; // Mark as unmounted on cleanup
+    };
+  }, [
+    fn,
+    currentCallerArgs,
+    cacheKey,
+    useCacheOption
+  ]); // Added all dependencies
+
+  return { data, error } as SuspenseQuery<A, R>;
+}
+
+export interface SuspenseQueryProps<A extends unknown[], R> extends QueryOptions<A, R> {
+  children?: FC<SuspenseQuery<A, R>>;
+}
+
+/**
+ * A React component that wraps the useSuspenseQuery hook.
+ * It uses the useSuspenseQuery hook to manage the query state and provides the query result as a prop to its children.
+ * This is especially useful for React class components that cannot use hooks directly.
+ * @template A - The type of the arguments passed to the query function.
+ * @template R - The type of the result returned by the query function.
+ * @param {SuspenseQueryProps<A, R>} props - An object with the query function, its arguments, and an optional child component.
+ * @returns {Renderable} The result of calling the child component with the query result as a prop, or null if no child component is provided.
+ */
+export function SuspenseQuery<A extends unknown[], R>(props: SuspenseQueryProps<A, R>): Renderable {
+  const { children: CH, ...queryOptions } = props;
+  const query = useSuspenseQuery(queryOptions);
+
+  // @ts-ignore
+  return CH ? <CH {...query} /> : null;
 }
 
 /*
