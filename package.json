@@ -1,23 +1,33 @@
 {
     "name": "nitro-query",
-    "version": "1.2.0",
+    "version": "1.4.8",
     "description": "A query utility for NitroJS applications",
-    "main": "dist/index.js",
-    "types": "dist/index.d.ts",
+    "main": "dist/nitro-query.es.js",
+    "types": "dist/src/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/src/index.d.ts",
+            "require": "./dist/nitro-query.cjs.js",
+            "import": "./dist/nitro-query.es.js",
+            "default": "./dist/nitro-query.es.js"
+        },
+        "./package.json": "./package.json"
+    },
     "type": "module",
+
     "scripts": {
         "build": "vite build"
     },
     "repository": {
         "type": "git",
-        "url": "git+https://github.com/nitrojs/query.git"
+        "url": "git+https://github.com/nitrojs-dev/query.git"
     },
     "author": "",
     "license": "ISC",
     "bugs": {
-        "url": "https://github.com/nitrojs/query/issues"
+        "url": "https://github.com/nitrojs-dev/query/issues"
     },
-    "homepage": "https://github.com/nitrojs/query#readme",
+    "homepage": "https://github.com/nitrojs-dev/query#readme",
     "dependencies": {
         "react": "^19.2.0"
     },
