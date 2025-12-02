@@ -21,7 +21,7 @@
  * THE SOFTWARE.
  */
 
-import { useState, useEffect, useCallback, useRef, type JSX, type ReactNode, type FC as FunctionComponent } from "react";
+import { useState, useEffect, useCallback, useRef, type JSX, type ReactNode } from "react";
 
 /** A type that represents anything React can render without server components (RSC) */
 export type Renderable = JSX.Element | Exclude<ReactNode, Promise<ReactNode>>;
@@ -145,9 +145,8 @@ export interface MutateFn<A extends unknown[]> {
 
 export interface MutationOptions<A extends unknown[], R>
   extends Omit<QueryOptions<A, R>, "callerArgs"> {
-  /** Optional: Keys used to clear related useQuery cache entries after a successful mutation. */
-  invalidateKeys?: string[];
-}
+    onSuccess?: (data: R) => void;
+  }
 
 export interface MutationResult<A extends unknown[], R> extends QueryResult<R> {
   mutate: MutateFn<A>;
@@ -163,7 +162,7 @@ export interface MutationResult<A extends unknown[], R> extends QueryResult<R> {
 export function useMutation<A extends unknown[], R>(
   opts: MutationOptions<A, R>
 ): MutationResult<A, R> {
-  const { fn, useCache: useCacheOption = true, invalidateKeys, customQueryKey } = opts;
+  const { fn, useCache: useCacheOption = true, onSuccess, customQueryKey } = opts;
   const [data, setData] = useState<R>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error>();
@@ -193,12 +192,8 @@ export function useMutation<A extends unknown[], R>(
           setData(returnData);
 
           // --- NEW: Invalidate the cache after a SUCCESSFUL mutation ---
-          if (invalidateKeys && invalidateKeys.length > 0) {
-            invalidateKeys.forEach(key => {
-              if (cache.has(key)) {
-                cache.delete(key);
-              }
-            });
+          if (onSuccess) {
+            onSuccess(returnData);
           }
 
           if (useCacheOption) {
@@ -220,7 +215,7 @@ export function useMutation<A extends unknown[], R>(
       }
     },
 
-    [fn, useCacheOption, invalidateKeys]
+    [fn, useCacheOption, onSuccess, customQueryKey]
   ); // Added all dependencies including invalidateKeys
 
   const mutateFn: MutateFn<A> = useAsync(mutate);
@@ -296,6 +291,7 @@ export function useAsync<A extends unknown[], R>(
 export interface Store<T> {
   value: T;
   reset(): void;
+  asAtom(): Atom<T>;
 }
 
 export type StateInput<T> = T | (() => T);
@@ -321,13 +317,21 @@ export function useStore<T>(initialValue: StateInput<T>): Store<T> {
   }, [initialValue]);
 
   return {
-    value,
-    reset
+    get value() {
+      return value;
+    },
+
+    set value(v) {
+      setValue(v);
+    },
+    
+    reset,
+    asAtom: () => atom(value),
   };
 }
 
 export interface Atom<T> {
-  readonly $$typeof?: symbol;
+  readonly $$typeof: symbol;
   readonly consume: () => T;
 }
 
@@ -368,7 +372,7 @@ export function useAtom<T>(store: Atom<T>): Store<T> {
   return st;
 }
 
-export interface AsyncComponent<P = {}> extends AsyncFn<[P], JSX.Element> { }
+export interface AsyncComponent<P = {}> extends AsyncFn<[P], ReactNode> { }
 export interface ErrorBoundaryProps {
   error: Error;
 }
@@ -537,6 +541,75 @@ export function SuspenseQuery<A extends unknown[], R>(props: SuspenseQueryProps<
 
   // @ts-ignore
   return CH ? <CH {...query} /> : null;
+}
+
+export class QueryClient {
+/**
+ * Clears the entire cache.
+ * This is useful for invalidating all cached data,
+ * or when you want to start fresh after a certain event.
+ */
+  clearCache() {
+    cache.clear();
+  }
+
+  /**
+   * Returns the global cache storage.
+   * This is useful for inspecting the cache,
+   * or for advanced use cases where you need to
+   * access the cache directly.
+   * @returns The global cache storage.
+   */
+  getCache() {
+    return cache;
+  }
+
+  /**
+   * Invalidates a single key in the cache.
+   * If the key exists in the cache, it is deleted.
+   * @param key - The key to invalidate.
+   */
+  invalidateKey(key: string) {
+    if (cache.has(key)) {
+      cache.delete(key);
+    }
+  }
+
+  /**
+   * Invalidates multiple keys in the cache.
+   * If any of the keys exist in the cache, they are deleted.
+   * @param keys - An array of keys to invalidate.
+   */
+  invalidateKeys(keys: string[]) {
+    keys.forEach((key) => this.invalidateKey(key));
+  }
+
+  /**
+   * Clears the entire cache and invalidates all keys.
+   * This is useful for invalidating all cached data,
+   * or when you want to start fresh after a certain event.
+   */
+  invalidateAll() {
+    this.clearCache();
+  }
+}
+
+/**
+ * A React hook that returns a QueryClient instance.
+ * The instance is memoized and will only change when the component is remounted.
+ * This is useful for accessing the QueryClient instance in your React components.
+ * @returns The QueryClient instance, or null if it has not been initialized.
+ */
+export const useQueryClient = () => {
+  const [client, setClient] = useState<QueryClient | null>(null);
+
+  useEffect(() => {
+    if (!client) {
+      setClient(new QueryClient());
+    }
+  }, [client]);
+
+  return client!;
 }
 
 /*
