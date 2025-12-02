@@ -45,6 +45,7 @@ export interface QueryResult<R> {
   loading: boolean;
   data?: R;
   error?: Error;
+  refetch(): void;
 }
 
 // --- Caching Mechanism ---
@@ -83,44 +84,49 @@ export function useQuery<A extends unknown[], R>(
   // Determine the cache key
   const currentCallerArgs = callerArgs ?? ([] as unknown[] as A);
   const cacheKey = customQueryKey ?? generateCacheKey(fn, currentCallerArgs);
+  const runQuery = async () => {
+    // Check cache only if useCacheOption is true
+    if (useCacheOption && cache.has(cacheKey)) {
+      setData(cache.get(cacheKey) as R);
+      setLoading(false);
+      return;
+    }
+    // If not cached or caching is disabled, proceed with fetching
+    try {
+      setLoading(true);
+      const res = fn(...currentCallerArgs);
+      const returnData = res instanceof Promise ? await res : res;
+      // Only update state if component is still mounted
+      if (isMounted.current) {
+        setData(returnData);
+        // Store result in cache only if useCacheOption is true
+        if (useCacheOption) {
+          cache.set(cacheKey, returnData);
+        }
+      }
+    } catch (e) {
+      if (isMounted.current) {
+        const err =
+          e instanceof Error
+            ? e
+            : new Error("An unexpected error occured :(");
+        setError(err);
+      }
+    } finally {
+      if (isMounted.current) {
+        setLoading(false);
+      }
+    }
+  };
+
+  const refetch = useCallback(() => {
+    runQuery();
+  }, [runQuery]);
 
   useEffect(() => {
     isMounted.current = true; // Set to true when effect runs (component mounts/updates)
 
-    const runQuery = async () => {
-      // Check cache only if useCacheOption is true
-      if (useCacheOption && cache.has(cacheKey)) {
-        setData(cache.get(cacheKey) as R);
-        setLoading(false);
-        return;
-      }
-      // If not cached or caching is disabled, proceed with fetching
-      try {
-        setLoading(true);
-        const res = fn(...currentCallerArgs);
-        const returnData = res instanceof Promise ? await res : res;
-        // Only update state if component is still mounted
-        if (isMounted.current) {
-          setData(returnData);
-          // Store result in cache only if useCacheOption is true
-          if (useCacheOption) {
-            cache.set(cacheKey, returnData);
-          }
-        }
-      } catch (e) {
-        if (isMounted.current) {
-          const err =
-            e instanceof Error
-              ? e
-              : new Error("An unexpected error occured :(");
-          setError(err);
-        }
-      } finally {
-        if (isMounted.current) {
-          setLoading(false);
-        }
-      }
-    };
+
     runQuery();
     return () => {
       isMounted.current = false; // Mark as unmounted on cleanup
@@ -129,10 +135,11 @@ export function useQuery<A extends unknown[], R>(
     fn,
     currentCallerArgs,
     cacheKey,
-    useCacheOption
+    useCacheOption,
+    customQueryKey
   ]); // Added all dependencies
 
-  return { data, error, loading };
+  return { data, error, loading, refetch };
 }
 
 // --- Mutation Types and Implementation (with Invalidation Feature) ---
@@ -145,10 +152,10 @@ export interface MutateFn<A extends unknown[]> {
 
 export interface MutationOptions<A extends unknown[], R>
   extends Omit<QueryOptions<A, R>, "callerArgs"> {
-    onSuccess?: (data: R) => void;
-  }
+  onSuccess?: (data: R) => void;
+}
 
-export interface MutationResult<A extends unknown[], R> extends QueryResult<R> {
+export interface MutationResult<A extends unknown[], R> extends Omit<QueryResult<R>, "refetch"> {
   mutate: MutateFn<A>;
 }
 
@@ -324,7 +331,7 @@ export function useStore<T>(initialValue: StateInput<T>): Store<T> {
     set value(v) {
       setValue(v);
     },
-    
+
     reset,
     asAtom: () => atom(value),
   };
@@ -519,7 +526,34 @@ export function useSuspenseQuery<A extends unknown[], R>(
     useCacheOption
   ]); // Added all dependencies
 
-  return { data, error } as SuspenseQuery<A, R>;
+  return {
+    data,
+    error,
+    refetch() {
+      (async () => {
+        try {
+          const res = fn(...currentCallerArgs);
+          const returnData = res instanceof Promise ? await res : res;
+          // Only update state if component is still mounted
+          if (isMounted.current) {
+            setData(returnData);
+            // Store result in cache only if useCacheOption is true
+            if (useCacheOption) {
+              cache.set(cacheKey, returnData);
+            }
+          }
+        } catch (e) {
+          if (isMounted.current) {
+            const err =
+              e instanceof Error
+                ? e
+                : new Error("An unexpected error occured :(");
+            setError(err);
+          }
+        }
+      })();
+    },
+  } as SuspenseQuery<A, R>;
 }
 
 export interface SuspenseQueryProps<A extends unknown[], R> extends QueryOptions<A, R> {
@@ -544,11 +578,11 @@ export function SuspenseQuery<A extends unknown[], R>(props: SuspenseQueryProps<
 }
 
 export class QueryClient {
-/**
- * Clears the entire cache.
- * This is useful for invalidating all cached data,
- * or when you want to start fresh after a certain event.
- */
+  /**
+   * Clears the entire cache.
+   * This is useful for invalidating all cached data,
+   * or when you want to start fresh after a certain event.
+   */
   clearCache() {
     cache.clear();
   }
